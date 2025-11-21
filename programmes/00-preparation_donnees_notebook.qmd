@@ -1,0 +1,1094 @@
+# ANALYSE REDISTRIBUTIVE D'UN SCENARIO DE REFORME DES DPB
+
+## Introduction
+
+Les droits à paiement de base (DPB) constituent aujourd’hui le principal socle du soutien direct de la PAC. Leur valeur unitaire, héritée des références historiques, reste très inégale entre exploitants : certains bénéficient de droits élevés, d’autres de droits beaucoup plus faibles. Depuis 2015, la PAC impose une convergence interne pour réduire progressivement ces écarts, mais elle s’applique uniquement aux hectares pour lesquels un DPB existe.
+
+Une piste de réflexion pour l’avenir consiste à aller plus loin, en instaurant un paiement unique par hectare admissible, valable pour l’ensemble des surfaces et des exploitants, indépendamment des droits historiques. Dans ce scénario, le soutien serait redistribué à budget constant, ce qui suppose des gagnants et des perdants par rapport au statu quo. L’intérêt est donc de simuler cette réforme afin d’analyser comment les bénéfices et pertes se répartiraient entre les différentes catégories d’exploitants.
+
+-   On veut voir quel variable de ESEA correspond à la surface admissible PAC
+
+-   Apparier PAC (exhaustive) sur ESEA (échantillon), pondérer et comparer les valeurs agrégés à la PAC totale
+
+-   Comparer par OTEX/REGION et si besoin calculer coefficient correcteur
+
+## INITIALISATION : LIBRAIRIES & IMPORT DES DONNÉES
+
+```{r}
+#| output: FALSE
+# =========================
+# 0. Préparation & Données
+# =========================
+
+#---------------
+# Librairies 
+#---------------
+library(data.table)
+library(janitor)
+library(readxl)
+library(readr)
+library(stringr)
+library(survey)
+library(here)
+
+#-----------------------------
+# Paramètres Personnalisables
+#-----------------------------
+esea_year = 2023
+
+#---------------
+# Chemins 
+#---------------
+pac_surf_path = here("data", "Surfaces-2023_DOSSIER-PAC_20251018.csv")
+pac_dpb_path = here("data", "Campagne-2023_paiement-premier-pilier_20251022060520.csv")
+esea_struct_path = here(path.expand("~/CERISE"), "03-Espace-de-Diffusion", 
+                        "030_Structures_exploitations", "3010_Enquetes_Structures", 
+                        paste0("ESEA_", esea_year), "Donnes_definitives",
+                        "RDS", "ESEA2023_STRUCTSIMPLE_2025_05_06.rds")
+esea_mo_chef_path = here(path.expand("~/CERISE"), "03-Espace-de-Diffusion", 
+                    "030_Structures_exploitations", "3010_Enquetes_Structures", 
+                    paste0("ESEA_", esea_year), "Donnes_definitives",
+                    "RDS", "ESEA2023_MO_CHEF_COEXPL_2025_05_06.rds")
+esea_finan_path = here(path.expand("~/CERISE"), "03-Espace-de-Diffusion", 
+                       "030_Structures_exploitations", "3010_Enquetes_Structures", 
+                       paste0("ESEA_", esea_year), "Donnes_definitives",
+                       "RDS", "ESEA2023_FINANCEMENTS_EURO_2025_05_06.rds")
+output_path = here("data", "base_esea_pac.csv")
+
+#---------------
+# Import 
+#---------------
+pac_surf = as.data.table(
+  read_delim(pac_surf_path,
+             delim = ";", escape_double = FALSE, quote="", 
+             col_types = cols(Pacage = col_character(), SIRET = col_character()),
+             locale = locale(decimal_mark = ",", grouping_mark = ";",
+                             encoding = "WINDOWS-1252"), trim_ws = TRUE))
+pac_dpb = as.data.table(
+  read_delim(pac_dpb_path,
+             delim = ";", escape_double = FALSE, quote="", 
+             col_types = cols(Pacage = col_character(), .default = col_double()),
+             locale = locale(decimal_mark = ",", grouping_mark = ";",
+                             encoding = "WINDOWS-1252"), trim_ws = TRUE))
+
+esea_struct = as.data.table(readRDS(esea_struct_path))
+
+esea_mo_chef = as.data.table(readRDS(esea_mo_chef_path))
+
+esea_finan = as.data.table(readRDS(esea_finan_path))
+
+#---------------
+# Fonctions
+#---------------
+clean_siret = function(x) {
+  x = str_trim(as.character(x))
+  x = ifelse(!is.na(as.numeric(x)), formatC(as.numeric(x), width = 0, format = "fg"), x)
+  str_pad(x, width = 14, pad = "0")
+}
+
+
+```
+
+## PREPROCESSING (PRÉPARATION DES CHAMPS SIRET)
+
+```{r}
+# ======================================
+# 1. Préparation des données PAC et ESEA
+# ======================================
+
+#------------------------------------
+# Construction et nettoyage base PAC
+#------------------------------------
+
+# Sélection variables et changement noms + correction SIRET
+pac_surf[, SIRET := clean_siret(SIRET)]
+pac = pac_surf[, .(Pacage, SIRET, SAU_GRAPH = `Surface graphique`, 
+                   SURF_ADM_CST = `Surface admissible constatée (ha)`)]
+
+# Appariement surfaces avec montant DPB 
+pac = merge(
+  pac,
+  pac_dpb[, .(Pacage, PBASE = `Montant net payé Aides découplées  - paiement de base`,
+              PJA = `Montant net payé Aides découplées  - aide complémentaire JA`,
+              PRED = `Montant net payé Aides découplées  - paiement redistributif`)],
+  by = "Pacage",
+  all.x = TRUE
+)
+
+# Remplace les NA par 0 + changement nom vars d'appariement
+pac[is.na(PBASE), PBASE := 0][is.na(PJA), PJA := 0][is.na(PRED), PRED := 0]
+
+# Calcul de l'ABIS (area-based-income-support)
+pac[, ABIS := PBASE + PJA + PRED]
+
+# Changement nom vars
+setnames(pac, c("Pacage", "SIRET"), c("PACAGE_pac", "SIRET_pac"))
+
+#------------------------------
+# Nettoyage et correction ESEA
+#------------------------------
+
+# France métropolitaine uniquement (DOM non-concernés par DPB)
+esea_struct = esea_struct[!SIEGE_CODE_REG %in% c("01","02","03","04","05","06")]
+esea_finan = esea_finan[NOM_DOSSIER %in% esea_struct$NOM_DOSSIER]
+esea_mo_chef = esea_mo_chef[NOM_DOSSIER %in% esea_struct$NOM_DOSSIER]
+
+# Harmonisation SIRET et PACAGE
+esea_struct[, SIRET := clean_siret(SIRET)]
+esea_struct[nchar(PACAGE) == 0, PACAGE := NA]
+
+# Commentaire
+cat("Il y a",  sum(is.na(esea_struct$PACAGE)), "exploitations sans PACAGE sur les", nrow(esea_struct)) 
+
+# Correction PACAGE manquants via SIRET et données ASP
+esea = merge(
+  esea_struct,
+  pac[!is.na(SIRET_pac) & !duplicated(SIRET_pac), .(PACAGE_pac, SIRET_pac)],
+  by.x = "SIRET",
+  by.y = "SIRET_pac",
+  all.x = TRUE
+)
+
+# Commentaire
+cat("\n\nOn récupère", sum(is.na(esea$PACAGE) & !is.na(esea$PACAGE_pac)), "PACAGE sur les", sum(is.na(esea_struct$PACAGE)), "NA grâce à la correction par SIRET")
+
+# Remplace avec le PACAGE de l'ASP quand pas de Pacage mais appariement SIRET
+esea[is.na(PACAGE), PACAGE := PACAGE_pac][, PACAGE_pac := NULL]
+setnames(esea, c("PACAGE", "SIRET"), c("PACAGE_esea", "SIRET_esea"))
+
+# Sélection des exploitations ESEA ayant un Pacage
+esea_pacage = esea[!is.na(PACAGE_esea)]
+
+```
+
+
+## DIAGNOSTIC APPARIEMENT ESEA ↔ PAC
+
+### Appariement par PACAGE/SIRET
+
+```{r}
+# ========================
+# Appariement PAC-ESEA
+# ========================
+
+#---------------
+# Première tentative d'appariement par code PACAGE
+#---------------
+esea_pac_merge = merge(
+  esea_pacage,
+  pac,
+  by.x = "PACAGE_esea",
+  by.y = "PACAGE_pac",
+  all.x = TRUE
+)
+
+cat("Sur les", nrow(esea_pac_merge), "exploitations ayant un PACAGE dans ESEA,", sum(is.na(esea_pac_merge$SURF_ADM_CST)), "ne sont pas retrouvés dans les fichiers PAC")
+
+exploit_na_pac = esea_pac_merge[is.na(SURF_ADM_CST), SIRET_esea] # Récupération des SIRETS dont le PACAGE ne sont pas retrouvés dans la PAC
+
+#---------------
+## Seconde tentative d'appariement par SIRET pour les échecs par PACAGE
+#---------------
+second_try = merge(
+  esea_pacage[SIRET_esea %in% exploit_na_pac],
+  pac[!is.na(SIRET_pac), ],
+  by.x = "SIRET_esea",
+  by.y = "SIRET_pac",
+  all.x = TRUE
+)[!is.na(PACAGE_pac), ]
+
+cat("\n\nSur les", nrow(exploit_na_pac), "exploitations non retrouvés dans la PAC avec le PACAGE,", nrow(second_try), "sont retrouvés en utilisant le SIRET provenant d'ESEA")
+
+#---------------
+# Fusion des deux tentatives
+#---------------
+
+# Harmonisation stricte des colonnes avant fusion 
+common_cols = intersect(names(esea_pac_merge), names(second_try))
+esea_pac_merge_ok = esea_pac_merge[!is.na(SURF_ADM_CST), ..common_cols]
+second_try_ok     = second_try[, ..common_cols]
+
+# Fusion
+esea_pac = rbindlist(list(esea_pac_merge_ok, second_try_ok))
+cat("\n\nTotal appariés :", nrow(esea_pac),"/", nrow(esea_pacage), "exploitations\n") # commentaire
+
+```
+
+### Diagnosic des exploitations non-appariées
+
+```{r}
+#---------------
+# Exploration des SIRETS nan-appariés
+#---------------
+
+# Liste des exploitations avec PACAGE dans ESEA mais non-appariées à PAC
+exploit_na = esea_pacage[!PACAGE_esea %in% esea_pac[, PACAGE_esea], NOM_DOSSIER]
+## Numéros dossier ou PAC appariés
+num_dossier_ok = esea_pac[, NOM_DOSSIER]
+## Numéros dossier ou PAC non-appariés
+num_dossier_na = esea_struct[!NOM_DOSSIER %in% num_dossier_ok, NOM_DOSSIER]
+# Créer Flag
+esea_finan[, in_PAC := fifelse(NOM_DOSSIER %in% num_dossier_ok, 1, 0)]
+esea_finan[, na_in_pac := fifelse(NOM_DOSSIER %in% exploit_na, 1, 0)]
+
+# Combien d'exploitation dont PACAGE non retrouvés dans PAC, on des subventions surface
+tabyl(esea_finan[na_in_pac==1, ]$BNF_EU_IACS)
+
+# Tabyl
+tabyl(esea_finan, in_PAC, BNF_EU_IACS) %>%
+  adorn_totals("col") 
+
+
+```
+
+Il parait - à premier abord - curieux que 3623 exploitations ayant un numéro PACAGE dans l'ESEA ne soient pas retrouvés dans la PAC. La base "ESEA2023_FINANCEMENTS_EURO" d'ESEA nous montre les subventions européennes et aides que reçoivent les exploitations sous forme de catégories binaires agrégées. En ce qui concerne les DPB, la variable qui nous intéresse est "BNF_EU_IACS" : Bénéficie d'aides européennes pour les surfaces ou les animaux. Tout d'abord sur les 3623 exploitations, 3308 ne reçoivent pas d'aide à la surface --\> peut être ont ils gardé le PACAGE d'anciennes aides ? Voici le diagnostic global:
+
+-   9 941 / 57 334 cas d'exploitations n'étant pas dans la PAC et ne recevant pas d'aide surface selon ESEA --\> cohérent
+-   25 049 / 57 334 cas d'exploitations étant dans la PAC et recevant des aides surfaces selon ESEA --\> cohérent
+-   267 / 57 334 cas d'exploitation n'étant pas dans la PAC et recevant des aides surfaces selon ESEA --\> non-cohérent, à vérifier tout de même le champs des données PAC (seulement DPB ou toutes aides surface?)
+-   15 157 / 57 344 cas d'exploitation étant dans la PAC et ne recevant pas d'aide surface selon ESEA --\> non-cohérent, mais à vérifier également si ils reçoivent DPB dans PAC
+
+
+## DIAGNOSTIC SURFACES ESEA ↔ PAC
+
+La PAC nous permet d’accéder aux surfaces graphiques et admissibles (celles utilisées pour le calcul des DPB), ainsi qu’à la masse totale des aides DPB pour l’ensemble des exploitations françaises — la PAC étant une source exhaustive. L’ESEA, en revanche, repose sur un échantillon : elle contient a priori uniquement les surfaces graphiques et, bien sûr, les poids d’échantillonnage de chaque exploitation.
+
+L’objectif est de calculer, à partir de la PAC, des statistiques agrégées (référence exhaustive) et de les comparer avec celles issues de l’ESEA pondérée :
+
+-   comparer les totaux DPB,
+-   confronter les surfaces graphiques issues de l’ESEA et de la PAC,
+-   puis comparer, au sein de l’ESEA, les surfaces graphiques et les surfaces admissibles.
+
+En cas d’écart, il s’agira d’estimer des coefficients correcteurs pour ajuster les données de l’ESEA. Si l'écart est trop grand, il faudra s'interroger sur l'appariement PACAGE ou sur la représentativié de l'ESEA quant aux DPB.
+
+### Diagnostic sur différence surfaces graphiques ESEA/PAC
+
+```{r}
+# ============================
+# Préparation des données et création des flags
+# ============================
+
+# Sélection des variables de surface ESEA (SAU_TOT) et PAC
+surface_comp = esea_pac[, .(PACAGE_esea, COEF_F, SAU_TOT, SAU_GRAPH, SURF_ADM_CST, ABIS)]
+
+# Création flag si les surfaces graph. ESEA et PAC sont égales
+surface_comp[, graph_same := 
+               (SAU_TOT == SAU_GRAPH) |
+               (SAU_TOT==0 & is.na(SAU_GRAPH))]
+# Création flag si les surfaces graph. ESEA et PAC sont égales (à 5 près)
+surface_comp[, graph_same_5 := 
+               abs(SAU_TOT - SAU_GRAPH) < 5 |
+               (SAU_TOT==0 & is.na(SAU_GRAPH))]
+# Création flag si les surfaces graph. ESEA et PAC sont égales (à 10 près)
+surface_comp[, graph_same_10 := 
+               abs(SAU_TOT - SAU_GRAPH) < 10 |
+               (SAU_TOT==0 & is.na(SAU_GRAPH))]
+# Création flag si les surfaces graph.|adm. ESEA et PAC sont égales (à 10 près)
+surface_comp[, graph_adm_same_10 := 
+               abs(SAU_TOT - SAU_GRAPH) < 10 | 
+               abs(SAU_TOT - SURF_ADM_CST) < 10 | 
+               SAU_TOT==0 & is.na(SAU_GRAPH)] 
+# Var différence entre surface graphique ESEA et adm. PAC
+surface_comp[, diff_sau_graph := SAU_TOT - SAU_GRAPH]
+
+
+# ============================
+# Mise en forme longue + calculs de fréquence
+# ============================
+cols = c("graph_same", "graph_same_5", "graph_same_10", "graph_adm_same_10")
+summary_data = melt(surface_comp, measure.vars = cols, variable.name = "flag")[,
+  .(N = .N), by = .(flag, value = fcase(is.na(value), "NA", default = as.character(value)))
+][, perc := round(N / sum(N) * 100, 1), by = flag
+][, label := paste0(perc, "% (", N, ")")]
+
+
+# ============================
+# Statistiques descriptives sur les différences de surface
+# ============================
+# Signe de l'écart SAU (ESEA) - Surf. graphique. (PAC)
+surface_comp[, signe_diff := fcase(
+  !is.na(diff_sau_graph) & diff_sau_graph < 0,
+    "Différence négative (SAU ESEA < PAC Graph.)",
+  !is.na(diff_sau_graph) & diff_sau_graph > 0,
+    "Différence positive (SAU ESEA > PAC Graph.)",
+  !is.na(diff_sau_graph) & diff_sau_graph == 0,
+    "Différence nulle (SAU ESEA = PAC Graph.)",
+  !is.na(SAU_TOT) & SAU_TOT == 0 & is.na(SAU_GRAPH),
+    "Différence nulle (SAU ESEA = PAC Graph.)",
+  default = NA_character_
+)]
+table_diff = surface_comp[, .N, by = signe_diff]
+table_diff[, Pourcentage := round(100 * N / sum(N), 1)]
+print(table_diff[order(-Pourcentage)])
+
+# Calcul du nombre et du pourcentage d'exploitations dont l'écart absolu dépasse chaque seuil
+seuils = c(5, 10, 15, 20, 30, 100)
+table_seuils = data.table(
+  Seuil_ha = seuils,
+  Nombre = sapply(seuils, function(s) sum(abs(surface_comp$diff_sau_graph) > s, na.rm = TRUE))
+)
+table_seuils[, Pourcentage := round(100 * Nombre / nrow(surface_comp), 2)]
+print(table_seuils)
+
+# ============================
+# Préparation des données pour pie charts multiples (surface graphique)
+# ============================
+cols = c("graph_same", "graph_same_5", "graph_same_10")
+summary_data_graph = melt(surface_comp, measure.vars = cols, variable.name = "flag")[,
+  .(N = .N), by = .(flag, value = fcase(is.na(value), "NA", default = as.character(value)))
+][, perc := round(100 * N / sum(N), 1), by = flag
+][, label_graph := paste0(perc, "%\n(", N, ")")]
+
+# Remplacer les noms des flags pour affichage
+summary_data_graph[, flag := fcase(
+  flag == "graph_same", "Pas de différence SAU-Graph.",
+  flag == "graph_same_5", "Écart SAU-Graph. ≤ 5 ha",
+  flag == "graph_same_10", "Écart SAU-Graph. ≤ 10 ha",
+  default = as.character(flag)
+)]
+
+# Forcer l'ordre des facettes
+summary_data_graph[, flag := factor(flag, levels = c("Pas de différence SAU-Graph.", "Écart SAU-Graph. ≤ 5 ha", "Écart SAU-Graph. ≤ 10 ha"))]
+
+# ============================
+# Création du graphique pie charts multiples
+# ============================
+ggplot(summary_data_graph, aes(x = "", y = N, fill = value)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y") +
+  facet_wrap(~ flag, ncol = 3) +
+  geom_text(aes(label = label_graph), position = position_stack(vjust = 0.5), size = 3) +
+  scale_fill_manual(values = c("TRUE" = "#B8C2F5", "FALSE" = "#DB785A")) +
+  labs(fill = "") +
+  theme_void() +
+  theme(
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+# ============================
+# Distribution des différences de surface
+# ============================
+ggplot(surface_comp, aes(x = diff_sau_graph)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 100, fill = "#B8C2F5", alpha = 0.6) +
+  geom_density(color = "black", linewidth = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Distribution des écarts (SAU ESEA – surface graphique PAC)",
+    x = "SAU - Surface Graphique (ha)",
+    y = "Densité"
+  ) +
+  xlim(-4, 2) + 
+  ylim(0, 6) +
+  theme_minimal()
+
+# ============================
+# Scatter plot des écarts (ESEA vs PAC) pour exploitations avec diff > 10ha
+# ============================
+
+diff_data = surface_comp[graph_same_10 == FALSE]
+ggplot(diff_data, aes(x = SAU_GRAPH, y = diff_sau_graph)) +
+  geom_point(alpha = 0.1, size = 1) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Écarts entre la surface ESEA et la surface graphique PAC",
+    subtitle = "Exploitations avec différence de surface graphique > 10 ha",
+    x = "Surface graphique PAC (ha)",
+    y = "Écart (SAU ESEA – surface graphique PAC, ha)"
+  ) +
+  coord_cartesian(xlim = c(0, 750), ylim = c(-200, 200)) +
+  theme_minimal()
+
+```
+
+Le pie chart en haut à gauche montre une comparaison brute entre SAU d’ESEA et surface graphique PAC pour les \~45 000 exploitations appariées. 
+Seulement 12% ont exactement la même surface et dans 70% des cas, la SAU ESEA est inférieur à la surface graphique PAC, ce qui fait sens, la SAU ESEA étant un mix de graphique et d'admissible, elle est bornée entre les deux. On retrouve tout de même 18% ou la SAU ESEA est supérieure à la graphique PAC ce qui ne fait pas trop sens, les différences dans ce cas sont globalement petites (voir la distribution des différences). A vérifier, mais je pense que cela est du au fait que l'ESEA à imputé cette SAU à l'aide d'extractions PAC plus anciennes (2023 ou 2024) ce qui fait que les valeurs se sont potentiellement corrigés entre temps du aux contrôles fais par les DDT.
+
+En relaxant un peu la condition d’égalité (±5 hectares), on obtient une correspondance de ~91%, et de 94% avec une marge de ±10 hectares. Cela suggère que, même si certaines exploitations présentent des écarts entre les deux sources, les valeurs restent du même ordre de grandeur.
+
+Dans ce dernier cas, il reste tout de même 2591 exploitations (5.8%) pour lesquelles la surface graphique ESEA diffère d’au moins 10 hectares de la surface graphique ESEA. Le scatter plot montre que, pour ces 2591 exploitations, les différences peuvent être importantes, allant de plusieurs dizaines à plusieurs centaines d’hectares. J’ai testé, sur plusieurs cas extrêmes, le ratio du DPB total de l’exploitation par – d’une part la surface ESEA, et d’autre part la surface admissible/graphique PAC. 
+
+On remarque aussi que, pour la plupart des exploitations ayant plus de 10 hectares d’écart avec la surface graphique PAC, la différence avec la surface admissible PAC est inférieure à 10ha (on passe alors d’une correspondance de 94% à 99%). Cela fait sens dans le sens ou la SAU d'ESEA est un mix graphique admissible, donc si elle est éloignée de la graphique elle est plus proche de l'admissible, et cela nous arrange car au final l'objectif sera de se rapprocher le plus possible de la surface admissible (pour la transformation des SAU hors PAC).
+
+
+### Diagnostic sur différence ente surface graphique ESEA et admissible PAC
+
+Qu'en est il des différences entre SAU ESEA et surface admissible PAC?
+
+```{r}
+
+# ============================
+# Préparation des données et création des variables de différence
+# ============================
+# Calcul des différences absolue et relative entre SAU ESEA et surface admissible PAC
+surface_comp[, diff_sau_adm := SAU_TOT - SURF_ADM_CST]
+surface_comp[, diff_sau_adm_abs := abs(diff_sau_adm)]
+surface_comp[, diff_sau_adm_pct := 100 * (SAU_TOT - SURF_ADM_CST) / SURF_ADM_CST]
+
+# ============================
+# Statistiques descriptives sur les différences de surface
+# ============================
+# Statistiques de base
+stats_diff = surface_comp[, .(
+  Moyenne = mean(diff_sau_adm, na.rm = TRUE),
+  Ecart_type = sd(diff_sau_adm, na.rm = TRUE),
+  Q1 = quantile(diff_sau_adm, 0.25, na.rm = TRUE),
+  Médiane = quantile(diff_sau_adm, 0.5, na.rm = TRUE),
+  Q3 = quantile(diff_sau_adm, 0.75, na.rm = TRUE),
+  Min = min(diff_sau_adm, na.rm = TRUE),
+  Max = max(diff_sau_adm, na.rm = TRUE)
+)]
+print(stats_diff)
+
+# Signe de l'écart SAU (ESEA) - Surf. adm. (PAC)
+surface_comp[, signe_diff := fcase(
+  !is.na(diff_sau_adm) & diff_sau_adm < 0,
+    "Différence négative (SAU ESEA < PAC Adm.)",
+  !is.na(diff_sau_adm) & diff_sau_adm > 0,
+    "Différence positive (SAU ESEA > PAC Adm.)",
+  !is.na(diff_sau_adm) & diff_sau_adm == 0,
+    "Différence nulle (SAU ESEA = PAC Adm.)",
+  !is.na(SAU_TOT) & SAU_TOT == 0 & is.na(SURF_ADM_CST),
+    "Différence nulle (SAU ESEA = PAC Adm.)",
+  default = NA_character_
+)]
+table_diff = surface_comp[, .N, by = signe_diff][order(signe_diff)]
+table_diff[, Pourcentage := round(100 * N / sum(N), 1)]
+print(table_diff[order(-Pourcentage)])
+
+# Calcul du nombre et du pourcentage d'exploitations dont l'écart absolu dépasse chaque seuil
+seuils = c(5, 10, 15, 20, 30, 100)
+table_seuils = data.table(
+  Seuil_ha = seuils,
+  Nombre = sapply(seuils, function(s) sum(abs(surface_comp$diff_sau_adm) > s, na.rm = TRUE))
+)
+table_seuils[, Pourcentage := round(100 * Nombre / nrow(surface_comp), 2)]
+print(table_seuils)
+
+# ============================
+# Préparation des données pour pie charts multiples avec labels adaptés
+# ============================
+summary_data = rbindlist(lapply(c(0, 5, 10), function(s) {
+  dt = data.table(
+    flag = if(s == 0) "Pas de différence SAU-Adm." else paste0("Écart SAU-Adm. ≤ ", s, " ha"),
+    value = c("TRUE", "FALSE"),
+    N = c(sum(surface_comp$diff_sau_adm_abs <= s, na.rm = TRUE),
+          sum(surface_comp$diff_sau_adm_abs > s, na.rm = TRUE))
+  )
+  dt[, perc := round(100 * N / sum(N), 1)]
+  dt
+}))
+
+# Forcer l'ordre des facettes : 0 ha à gauche, 5 au centre, 10 à droite
+summary_data[, flag := factor(flag, levels = c("Pas de différence SAU-Adm.", "Écart SAU-Adm. ≤ 5 ha", "Écart SAU-Adm. ≤ 10 ha"))]
+
+# Préparer les labels pour le graphique
+summary_data[, label_graph := ifelse(perc >= 1, paste0(perc, "%\n(", N, ")"), "")]
+
+# ============================
+# Création du graphique pie charts multiples
+# ============================
+ggplot(summary_data, aes(x = "", y = N, fill = value)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y") +
+  facet_wrap(~ flag, ncol = 3) +
+  geom_text(aes(label = label_graph), position = position_stack(vjust = 0.5), size = 3) +
+  scale_fill_manual(values = c("TRUE" = "#A1DB65", "FALSE" = "#DB785A")) +
+  labs(fill = "") +
+  theme_void() +
+  theme(
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+# ============================
+# Distribution des écarts (en hectares)
+# ============================
+ggplot(surface_comp, aes(x = diff_sau_adm)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 100, fill = "#A1DB65", alpha = 0.6) +
+  geom_density(color = "black", linewidth = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Distribution des écarts (SAU ESEA – surface admissible PAC)",
+    x = "SAU - Surface Admissible (ha)",
+    y = "Densité"
+  ) +
+  xlim(-2, 4) +  # Crop x-axis: removes values outside [-3,3]
+  ylim(0, 6) +
+  theme_minimal()
+
+# ============================
+# Scatter plot des écarts
+# ============================
+ggplot(surface_comp, aes(x = SURF_ADM_CST, y = diff_sau_adm)) +
+  geom_point(alpha = 0.1, size=1) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Écarts entre SAU ESEA et surface admissible PAC",
+    x = "Surface admissible PAC (ha)",
+    y = "Écart (SAU_TOT - SURF_ADM_CST, ha)"
+  ) +
+  coord_cartesian(xlim = c(0, 1000), ylim = c(-200, 200)) +
+  theme_minimal()
+
+```
+
+La comparaison entre la surface graphique ESEA et la surface admissible PAC montre que, globalement, la surface admissible est inférieure d’environ 1 à 2 hectares. Il existe toutefois certains cas particuliers :
+
+-   2 397 exploitations (5.4 %) présentent une SAU ESEA inférieure à la surface admissible PAC, avec des écarts généralement faibles ;
+-   Des écarts plus ou moins importants apparaissent également : environ 5% des exploitations ont un écart supérieur à 5 ha, 1 % un écart supérieur à 15 ha, et 0.15 % (soit 67 exploitations) un écart supérieur à 100 ha. Ces écarts restent relativement marginaux mais significatifs. Comme mentionné précédemment, les données de la PAC faisant référence, il s’agit probablement d’erreurs du côté d’ESEA ou bien encore une fois des corrections effectués sur les extractions plus récentes.
+
+La prochaine étape consistera à développer une méthode permettant de corriger ou de transformer la SAU d'ESEA pour toutes les exploitations hors PAC.
+
+## COMPARAISON ADMISSIBLE/GRAPHIQUE
+
+```{r}
+# Fonction pour moyenne robuste en enlevant les 5% extreme
+robust_mean_top5 = function(x) mean(x, na.rm = TRUE, trim = 0.025)
+
+# Création des catégories pour le comparatif SAU vs Graphique / Admissible
+surface_comp[, cat_sau := fcase(
+  !is.na(SAU_TOT) & SAU_TOT <= SAU_GRAPH & SAU_TOT >= SURF_ADM_CST,
+    "Entre Graphique et Admissible",
+  !is.na(SAU_TOT) & SAU_TOT < SURF_ADM_CST,
+    "En-dessous de l'admissible",
+  !is.na(SAU_TOT) & SAU_TOT > SAU_GRAPH,
+    "Au-dessus de la graphique",
+  default = NA_character_
+)]
+
+# Calcul de la variable de différence selon la catégorie
+surface_comp[, diff_moy := fcase(
+  cat_sau == "Au-dessus de la graphique", SAU_TOT - SAU_GRAPH,
+  cat_sau == "En-dessous de l'admissible", SURF_ADM_CST - SAU_TOT,
+  cat_sau == "Entre Graphique et Admissible", NA_real_
+)]
+
+# Calcul des effectifs, pourcentages et moyenne robuste en enlevant les 5% les plus grandes différences
+table_sau = surface_comp[, .(
+  N = .N,
+  Pourcentage = round(100 * .N / nrow(surface_comp), 1),
+  Moyenne_diff_robuste = round(robust_mean_top5(diff_moy), 2)
+), by = cat_sau][order(cat_sau)]
+
+# Affichage de la table
+print(table_sau)
+
+#==========
+
+#=========
+
+# Sélection des variables à analyser
+vars = c("SAU_TOT", "SAU_GRAPH", "SURF_ADM_CST")
+
+# Création d'une liste pour stocker les résultats
+stats_list = lapply(vars, function(v) {
+  data = surface_comp[[v]]
+  data = data[!is.na(data)]
+  data.frame(
+    Variable = v,
+    Moyenne = round(mean(data, na.rm = TRUE), 2),
+    Moyenne_robuste_5pct = round(robust_mean_top5(data), 2),
+    Q1 = round(quantile(data, 0.25, na.rm = TRUE), 2),
+    Mediane = round(quantile(data, 0.5, na.rm = TRUE), 2),
+    Q3 = round(quantile(data, 0.75, na.rm = TRUE), 2)
+  )
+})
+
+# Combiner les résultats en un seul tableau
+stats_sau_graph_adm = do.call(rbind, stats_list)
+
+# Affichage du tableau
+print(stats_sau_graph_adm)
+
+```
+
+
+
+
+## DIAGNOSTIC ENTRE DONNEES PONDEREES ESEA ET DONNEES EXHAUSTIVES PAC
+
+```{r}
+# ============================
+# Pondération des variables ESEA
+# ============================
+surface_comp[, esea_abis := COEF_F * ABIS]
+surface_comp[, esea_surf_adm := COEF_F * SURF_ADM_CST]
+
+# ============================
+# Sommes totales PAC vs ESEA pondéré
+# ============================
+pac_abis   = sum(pac$ABIS, na.rm = TRUE)
+esea_abis  = sum(surface_comp$esea_abis, na.rm = TRUE)
+pac_adm   = sum(pac$SURF_ADM_CST, na.rm = TRUE)
+esea_adm  = sum(surface_comp$esea_surf_adm, na.rm = TRUE)
+
+# Tableau récapitulatif
+diag_table = data.table(
+  Variable = c("Total DPB", "Total Surface Admissible"),
+  PAC_exhaustif = c(pac_abis, pac_adm),
+  ESEA_pondéré = c(esea_abis, esea_adm)
+)
+diag_table[, Diff_absolue := ESEA_pondéré - PAC_exhaustif]
+diag_table[, Diff_relative_pct := round(100 * Diff_absolue / PAC_exhaustif, 2)]
+
+print(diag_table)
+
+```
+
+## DIAGNOSTIC SURFACES EXPLOITATIONS NON-APPARIEES PAC
+
+### Est-il possible d'améliorer la SAU ESEA pour les exploitations non-appariées?
+
+On discutant avec Félix, nous nous sommes rendu compte que les exploitations où la surface graphique (ESEA & PAC) est inférieur à la surface admissible constatée (non-sens) correspond à l'omission des surfaces en estives et en abattis (pourquoi est-ce aussi le cas pour la surface graphique benef23 PAC). 
+
+Sachant que les DPB sont appliqués aux estives et abbatis, nous allons voir dans la prochaine sous-partie si - pour les exploitations non-appariées PAC (~13 000) - il est possible de reconstituer la surface graphique véritable (SAU + estives/abattis)
+
+Question: Est-on sur que la SAU pour les exploitations hors-PAC correspond aussi à un mix de graphique-admissible en fonction de prairies peu-productives?
+
+```{r}
+# ============================
+# SELECTION DES ID D'EXPLOITATION HORS PAC
+# ============================
+id_esea_pur = esea[!NOM_DOSSIER %in% esea_pac[, NOM_DOSSIER], NOM_DOSSIER]
+
+# ============================
+# EXPLORATION VARIABLES
+# ============================
+esea_non_pac = esea[NOM_DOSSIER %in% id_esea_pur, ]
+
+```
+
+Sur les 12 687 exploitations hors PAC, seules 4 disposent d’estives. Donc nous omettons ce problème et passons directement à la transformation de la SAU par ratio (à partir des données appariées avec la PAC)
+
+### Récupération d'une table de ratio SAU/Admissible par région/otex/cdex à partir des exploitations appariées PAC-ESEA
+
+```{r}
+# ======================================================
+# Préparation des bases PAC et non-PAC
+# ======================================================
+
+# Suppression des NA et valeurs nulles sur la surface admissible
+esea_pac_clean = esea_pac[!is.na(SURF_ADM_CST) & SURF_ADM_CST > 0]
+
+# Suppression des cas où la SAU_TOT est inférieure à la surface admissible
+esea_pac_clean = esea_pac_clean[SAU_TOT >= SURF_ADM_CST, ]
+
+# Suppression des cas ou la différence SAU_TOT et surface admissible est aberrante (34 lignes)
+esea_pac_clean = esea_pac_clean[SAU_TOT/SURF_ADM_CST<10, ]
+
+# Calcul du ratio graphique/admissible
+esea_pac_clean[, ratio := SAU_TOT / SURF_ADM_CST]
+
+
+# ======================================================
+# Calcul des ratios moyens par croisement selon nouvelle hiérarchie
+# ======================================================
+
+# Niveau 1 : croisement complet (Région × CDEX × OTEX)
+ratio_full = esea_pac_clean[, .(ratio_mean = mean(ratio, na.rm = TRUE)),
+                            by = .(SIEGE_CODE_REG, CDEX_COEF_2020, OTEFDA_COEF_2020)]
+
+# Niveau 2 : croisement OTEX × CDEX
+ratio_otex_cdex = esea_pac_clean[, .(ratio_mean = mean(ratio, na.rm = TRUE)),
+                                 by = .(OTEFDA_COEF_2020, CDEX_COEF_2020)]
+
+# Niveau 3 : croisement Région × CDEX
+ratio_region_cdex = esea_pac_clean[, .(ratio_mean = mean(ratio, na.rm = TRUE)),
+                                   by = .(SIEGE_CODE_REG, CDEX_COEF_2020)]
+
+# Niveau 4 : croisement Région × OTEX
+ratio_region_otex = esea_pac_clean[, .(ratio_mean = mean(ratio, na.rm = TRUE)),
+                                   by = .(SIEGE_CODE_REG, OTEFDA_COEF_2020)]
+
+
+
+
+# ======================================================
+# Imputation des surfaces admissibles manquantes
+# ======================================================
+
+# Création de la nouvelle table pour ne pas toucher à l'originale
+esea_non_pac_impute = merge(esea_non_pac, ratio_full,
+                            by = c("SIEGE_CODE_REG", "CDEX_COEF_2020", "OTEFDA_COEF_2020"),
+                            all.x = TRUE)
+
+# Flag constant de la source du ratio
+esea_non_pac_impute[, source_ratio := fifelse(!is.na(ratio_mean), "ratio_reg_cdex_otex", NA_character_)]
+
+# Niveau 2 : OTEX × CDEX
+esea_non_pac_impute[is.na(ratio_mean),
+  c("ratio_mean", "source_ratio") := {
+    tmp = ratio_otex_cdex[.SD, on = .(OTEFDA_COEF_2020, CDEX_COEF_2020)]
+    list(tmp$ratio_mean, "ratio_otex_cdex")
+  }
+]
+
+# Niveau 3 : Région × CDEX
+esea_non_pac_impute[is.na(ratio_mean),
+  c("ratio_mean", "source_ratio") := {
+    tmp = ratio_region_cdex[.SD, on = .(SIEGE_CODE_REG, CDEX_COEF_2020)]
+    list(tmp$ratio_mean, "ratio_reg_cdex")
+  }
+]
+
+# Niveau 4 : Région × OTEX
+esea_non_pac_impute[is.na(ratio_mean),
+  c("ratio_mean", "source_ratio") := {
+    tmp = ratio_region_otex[.SD, on = .(SIEGE_CODE_REG, OTEFDA_COEF_2020)]
+    list(tmp$ratio_mean, "ratio_reg_otex")
+  }
+]
+
+# Calcul de la surface admissible imputée
+esea_non_pac_impute[, SURF_ADM_IMPUTEE := SAU_TOT / ratio_mean]
+
+
+# ======================================================
+# Diagnostic des ratios et vérifications
+# ======================================================
+diag_ratio = data.table(
+  Niveau = c("Complet (REG×CDEX×OTEX)", "OTEX×CDEX", "Région×OTEX", "Région×CDEX"),
+  Moyenne = c(
+    mean(ratio_full$ratio_mean, na.rm = TRUE),
+    mean(ratio_otex_cdex$ratio_mean, na.rm = TRUE),
+    mean(ratio_region_otex$ratio_mean, na.rm = TRUE),
+    mean(ratio_region_cdex$ratio_mean, na.rm = TRUE)
+  ),
+  Q1 = c(
+    quantile(ratio_full$ratio_mean, 0.25, na.rm = TRUE),
+    quantile(ratio_otex_cdex$ratio_mean, 0.25, na.rm = TRUE),
+    quantile(ratio_region_otex$ratio_mean, 0.25, na.rm = TRUE),
+    quantile(ratio_region_cdex$ratio_mean, 0.25, na.rm = TRUE)
+  ),
+  Médiane = c(
+    quantile(ratio_full$ratio_mean, 0.5, na.rm = TRUE),
+    quantile(ratio_otex_cdex$ratio_mean, 0.5, na.rm = TRUE),
+    quantile(ratio_region_otex$ratio_mean, 0.5, na.rm = TRUE),
+    quantile(ratio_region_cdex$ratio_mean, 0.5, na.rm = TRUE)
+  ),
+  Q3 = c(
+    quantile(ratio_full$ratio_mean, 0.75, na.rm = TRUE),
+    quantile(ratio_otex_cdex$ratio_mean, 0.75, na.rm = TRUE),
+    quantile(ratio_region_otex$ratio_mean, 0.75, na.rm = TRUE),
+    quantile(ratio_region_cdex$ratio_mean, 0.75, na.rm = TRUE)
+  )
+)
+
+print(diag_ratio)
+summary(esea_non_pac_impute$SURF_ADM_IMPUTEE)
+
+# Comptage des exploitations par niveau de ratio utilisé
+diag_flag = esea_non_pac_impute[, .N, by = source_ratio][order(source_ratio)]
+setnames(diag_flag, "N", "Nb_exploitations")
+print(diag_flag[order(-Nb_exploitations)])
+
+
+# ======================================================
+# Recombinaison avec la base PAC initiale
+# ======================================================
+esea_pac[, status_pac := "Présente à la PAC"]
+esea_non_pac_impute[, status_pac := "Non-présente à la PAC"]
+
+esea_in_pac = esea_pac[, .(NOM_DOSSIER, COEF_F, SAU_TOT, SURF_ADM = SURF_ADM_CST, status_pac)]
+esea_out_pac = esea_non_pac_impute[, .(NOM_DOSSIER, COEF_F, SAU_TOT, SURF_ADM = SURF_ADM_IMPUTEE, status_pac)]
+
+esea_finale = rbindlist(list(esea_in_pac, esea_out_pac), fill = TRUE)
+esea_finale[, SURF_ADM := round(SURF_ADM, digits=2)]
+
+
+```
+
+```{r}
+# Somme pondéré des exploitations n'ayant pas de SAU (elevage hors-sol/apiculteurs)
+hors_sol_esea = sum(esea_finale[SAU_TOT==0]$COEF_F)
+# Le RA 2020 annonce 2% de toute les exploitations étant hors sol
+hors_sol_ra = 0.02*sum(esea_finale$COEF_F)
+# Ratio
+print(hors_sol_ra/hors_sol_esea) # casi exactement similaire
+
+
+# 1. Ici, on ne conserve que les observations valides (SAU_TOT > 0)
+esea_SAU_pos = subset(esea_finale, SAU_TOT > 0)
+# 2. Créer le design d’enquête
+d = svydesign(ids = ~1, weights = ~COEF_F, data = esea_SAU_pos)
+# 3. Calculer la moyenne pondérée (comparé à 69 en 2020)
+svymean(~SAU_TOT, design = d)
+svymean(~SURF_ADM, design = d)
+
+```
+
+## AJOUT D'AUTRES VARIABLES + CHECKS
+
+Cette section traite de l'ajout d'autres variables utilisées dans les fonctions de simulation et de comparaison des scénarios. Pour chaque variable rajoutée, des checks de cohérence sont mis en place afin de voir si ces variables pondérés ESEA sont représentative de la réalité sur toutes les exploitations.
+
+```{r}
+# ======================================================
+# Ajout d'autres variables
+# ======================================================
+library(ggrepel)
+
+#--------------------
+# Variables de sexe
+#--------------------
+
+# Création variables
+esea_sexe = esea_mo_chef[, .(
+  chef_homme = sum(STATUTDIRIG==1 & SEX=="M"),
+  chef_femme = sum(STATUTDIRIG==1 & SEX=="F"),
+  co_expl_homme = sum(STATUTDIRIG==2 & SEX=="M"),
+  co_expl_femme = sum(STATUTDIRIG==2 & SEX=="F")
+), by = NOM_DOSSIER]
+
+# Merge pour avoir le coef
+esea_sexe = merge(
+  esea_sexe,
+  esea[, .(NOM_DOSSIER, COEF_F)],
+  by = "NOM_DOSSIER",
+  all.x = TRUE
+)
+
+# Check de cohérence ------
+esea_sexe[, `:=`(
+  une_femme_seule = chef_femme==1 & co_expl_homme==0 & co_expl_femme==0,
+  cogestion_feminine = chef_femme==1 & co_expl_homme==0 & co_expl_femme>0,
+  un_homme_seul = chef_homme==1 & co_expl_homme==0 & co_expl_femme==0,
+  cogestion_masculine = chef_homme==1 & co_expl_homme>0 & co_expl_femme==0,
+  femme_expl_mixte = chef_femme==1 & co_expl_homme>0,
+  homme_expl_mixte = chef_homme==1 & co_expl_femme>0
+)]
+
+# Calcul val
+tot_expl = sum(esea_sexe$COEF_F) # ~349 000 exploitations
+tot_une_femme_seule = sum(esea_sexe[une_femme_seule==1, COEF_F]) # ~62 104 exploitations
+tot_cogestion_feminine = sum(esea_sexe[cogestion_feminine==1, COEF_F]) # ~1 454 exploitations
+tot_un_homme_seul = sum(esea_sexe[un_homme_seul==1, COEF_F]) # ~210 847 exploitations
+tot_cogestion_masculine = sum(esea_sexe[cogestion_masculine==1, COEF_F]) # ~28 215 exploitations
+tot_femme_expl_mixte = sum(esea_sexe[femme_expl_mixte==1, COEF_F]) # ~13 576 exploitations
+tot_homme_expl_mixte = sum(esea_sexe[homme_expl_mixte==1, COEF_F]) # ~33 425 exploitations
+
+# Pourcentage de femmes exploitantes/coexploitantes (26% en 2020)
+part_femme = esea_sexe[, sum((chef_femme+co_expl_femme)*COEF_F)] # ~115 000
+part_homme = esea_sexe[, sum((chef_homme+co_expl_homme)*COEF_F)] # ~329 000
+print((part_femme)/(part_femme+part_homme)) # ~26%
+
+### ---------------------------------------
+### 1. Vos données
+### ---------------------------------------
+
+dt_mine = data.table(
+  categorie = c(
+    "Cheffe seule",
+    "Cogestion féminine",
+    "Chef homme seul",
+    "Cogestion masculine",
+    "Cheffe (mixte)",
+    "Chef homme (mixte)"
+  ),
+  total = c(
+    round(tot_une_femme_seule, digits = 0),
+    round(tot_cogestion_feminine, digits=0),
+    round(tot_un_homme_seul, digits=0),
+    round(tot_cogestion_masculine, digits=0),
+    round(tot_femme_expl_mixte, digits=0),
+    round(tot_homme_expl_mixte, digits=0)
+  )
+)
+
+dt_mine[, pct := round(100 * total / tot_expl, digits=2)]
+dt_mine[, source := "ESEA 2023"]
+
+
+### ---------------------------------------
+### 2. Données officielles RA
+### ---------------------------------------
+
+dt_ra = data.table(
+  categorie = c(
+    "Cheffe seule",
+    "Cogestion féminine",
+    "Chef homme seul",
+    "Cogestion masculine",
+    "Cheffe (mixte)",
+    "Chef homme (mixte)"
+  ),
+  total = c(72575, 1640, 235854, 29153, 10327, 40230)
+)
+
+tot_ra = sum(dt_ra$total)
+
+dt_ra[, pct := round(100 * total / tot_ra, digits=2)]
+dt_ra[, source := "RA 2020"]
+
+### ---------------------------------------
+### 3. Fusion
+### ---------------------------------------
+
+# Fusion
+df = rbind(dt_mine, dt_ra)
+
+# Ajout labels
+df[, label := sprintf("%.1f%% (%s)",
+                      pct,
+                      format(total, big.mark = " ", scientific = FALSE))]
+
+# Plot
+pd = position_dodge2(width = 0.8, preserve = "single")
+
+ggplot(df, aes(x = categorie, y = pct, fill = source)) +
+  geom_col(position = pd, width = 0.7) +
+
+  geom_text_repel(
+    aes(label = label),
+    position = pd,           # OK avec ggrepel
+    size = 3.6,
+    max.overlaps = Inf,
+    min.segment.length = 0,
+    box.padding = 0.4,
+    point.padding = 0.3,
+    force = 4,
+    direction = "y"          # forces labels to move vertically only
+  ) +
+
+  scale_fill_manual(values = c("ESEA 2023" = "#F28E2B",
+                               "RA 2020" = "#5DA5DA")) +
+  scale_y_continuous(expand = expansion(mult = c(0, .18))) +
+
+  labs(
+    title = "Comparaison entre ESEA 2023 pondéré et le RA 2020",
+    subtitle = "Pourcentage des exploitations (n entre parenthèses)",
+    x = NULL, y = "Pourcentage"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    legend.title = element_blank()
+  )
+
+
+
+```
+
+
+Selon le MASA et le RA 2020 (https://agreste.agriculture.gouv.fr/agreste-web/disaron/Pri2402/detail/), il y avait en 2020, 130 000 cheffes ou co-exploitantes, soit 26% du total. Selon l'ESEA pondéré, il y en a 115 000, soit toujours 26% du total d'exploitants, ayant baissé entre temps. De plus le graphique de comparaison des non-salariés par genre, entre le RA 2020 et l'ESEA 2023 sont très proche. On peut assumer que les écarts proviennent de la baisse d'exploitants en 3 ans, plutôt que par un biais de source.
+
+
+```{r}
+#---------------------
+# Jeunes agriculteurs
+#---------------------
+
+esea_PJA_pac = esea_pac[, .(
+  NOM_DOSSIER,
+  nb_PJA = round(PJA/4469, digits=0)
+)]
+
+# esea_PJA_hors_pac = esea_mo_chef[, .(
+#   moins_de_40 = sum((esea_year - ANAIS) < 40)
+# ), by=NOM_DOSSIER][NOM_DOSSIER %in% esea_out_pac$NOM_DOSSIER]
+
+
+#--------------------
+# Zones défavorisées
+#--------------------
+
+esea_zones_ichn = esea_finan[, .(
+  NOM_DOSSIER,
+  zone_ichn = fifelse(REGL_1305_2013=="NNT_ANC", 0, 1)
+)]
+
+
+#-----------------------
+# Petites exploitations
+#-----------------------
+
+esea_petites_expl = esea_struct[, .(
+  NOM_DOSSIER,
+  petites_expl = CDEX_COEF_2020 %in% c("01", "02", "03", "04", "05")
+)]
+
+#-----------------------
+# Type d'agriculture
+#-----------------------
+
+esea_otex = esea_struct[, .(
+  NOM_DOSSIER,
+  otex64 = libelle_OTE64
+)]
+
+#-------------------------
+# Ajout à la table finale
+#-------------------------
+
+# Merge successifs 
+esea_finale = merge(esea_finale, esea_sexe[, .(NOM_DOSSIER, chef_femme, chef_homme)],
+                    by = "NOM_DOSSIER", all.x = TRUE)
+
+esea_finale = merge(esea_finale, esea_PJA_pac,
+                    by = "NOM_DOSSIER", all.x = TRUE)[is.na(nb_PJA), nb_PJA := 0]
+
+esea_finale = merge(esea_finale, esea_zones_ichn,
+                    by = "NOM_DOSSIER", all.x = TRUE)
+
+esea_finale = merge(esea_finale, esea_petites_expl,
+                    by = "NOM_DOSSIER", all.x = TRUE)
+
+esea_finale = merge(esea_finale, esea_otex,
+                    by = "NOM_DOSSIER", all.x = TRUE)
+
+
+```
+
+## MODIFICATION DU CONTREFACTUEL (CONVERGENCE PARTIELLE ET TOTALE)
+
+```{r}
+# -- Paramètres --
+min_val = 95
+max_val = 160
+bornes = seq(min_val, max_val, by = 5)
+
+# -- Filtre + tranches --
+dt = pac_dpb_ptf[
+  VALEUR_UNI_2023    %between% c(min_val, max_val) &
+    VALEUR_UNI_CONV25 %between% c(min_val, max_val)
+]
+
+dt[, tranche_2023  := cut(VALEUR_UNI_2023,    breaks = bornes, include.lowest = TRUE, right = FALSE)]
+dt[, tranche_conv25 := cut(VALEUR_UNI_CONV25, breaks = bornes, include.lowest = TRUE, right = FALSE)]
+
+all_tranches = levels(dt$tranche_2023)
+
+# -- Agrégations 2023 et convergence --
+agg = function(var) {
+  out = dt[, .(nb = sum(NB_DPB)), by = var]
+  setnames(out, var, "tranche")
+  # grille complète
+  out = merge(data.table(tranche = all_tranches), out, by = "tranche", all.x = TRUE)
+  out[is.na(nb), nb := 0]
+  out
+}
+
+agg_2023  = agg("tranche_2023")[,  variable := "2023"]
+agg_conv  = agg("tranche_conv25")[, variable := "Après convergence"]
+
+# -- Combine + parts --
+agg_all = rbindlist(list(agg_2023, agg_conv))
+agg_all[, part := nb / sum(nb), by = variable]
+agg_all[, tranche_num := .GRP, by = tranche]
+
+# -- Graphique --
+ggplot(agg_all, aes(tranche_num, part*100, color = variable, group = variable)) +
+  geom_line(size = 0.8) +
+  scale_color_manual(values = c("#F54927", "#4F7AF0")) +
+  scale_x_continuous(
+    breaks = agg_all[, unique(tranche_num)],
+    labels = agg_all[, unique(as.character(tranche))]
+  ) +
+  labs(x = "Valeur du DPB", y = "% de DPB", color = "") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
