@@ -18,11 +18,11 @@ Ce projet développe un outil permettant de **simuler le futur soutien à l’he
 ### Structure du Projet
 
 ```         
-├── README.md <- Documentation principale du projet
+├── README.md                              <- Documentation principale du projet
 │
-├── .gitignore <- Exclusion des données confidentielles
+├── .gitignore                             <- Exclusion des données confidentielles
 │
-├── données <- Dossier vide (fichiers non-suivis)
+├── données                                <- Dossier vide (fichiers non-suivis)
 │
 ├── programmes                             
 │   ├── 01-preparation_donnees_ctf.R       <- Construction du contrefactuel
