@@ -142,7 +142,7 @@ simulation_scenario = function(df,
   #===========================
   
   # Calcul des aides sur toutes exploitations et hectares
-  df[, ABIS := SURF_ADM * aide_ha_adm]
+  df[, ABIS_new := SURF_ADM * aide_ha_adm]
   
   #----------------------------------------
   # Barème de dégressivité et plafonnement
@@ -168,7 +168,7 @@ simulation_scenario = function(df,
   
   if (isTRUE(degress_cap)) {
     # Application sur chaque exploitation
-    df[, DABIS := apply_degressivity(ABIS)]
+    df[, DABIS := apply_degressivity(ABIS_new)]
   }
   
   #=========================
@@ -205,8 +205,8 @@ simulation_scenario = function(df,
     aide_ha_adm = sol$root
     
     # Recalcul final avec ce niveau calibré
-    df[, ABIS := SURF_ADM * aide_ha_adm]
-    df[, DABIS := apply_degressivity(ABIS)]
+    df[, ABIS_new := SURF_ADM * aide_ha_adm]
+    df[, DABIS := apply_degressivity(ABIS_new)]
   }
   
   
@@ -215,7 +215,7 @@ simulation_scenario = function(df,
   #=====================================
   
   # Utiliser ABIS si on n'applique pas la dégressivité (DABIS)
-  var_aide = fifelse(isTRUE(degress_cap), "DABIS", "ABIS")
+  var_aide = fifelse(isTRUE(degress_cap), "DABIS", "ABIS_new")
   
   # Ajout de lump sum
   if (custom_aide_ha != 0) {
@@ -251,36 +251,7 @@ simulation_scenario = function(df,
     }
   }
   
+  cat("L'aide finale à l'hectare est de", aide_ha_adm, "euros/ha")
   return(df)
 }
-
-
-
-# Test
-test = simulation_scenario(esea_finale[, ABIS := ABIS_CONVTOT],
-                           # COMMUN
-                           degress_cap = TRUE,
-                           # BLOC 1
-                           custom_aide_tot = 0,
-                           calibration = TRUE,
-                           # BLOC 2
-                           custom_aide_ha = 0,
-                           lump_sum = list(
-                             Femmes = 0 ,
-                             Petites_exploitations = 0,
-                             Zones_defavorisees = 0,
-                             Jeunes_agriculteurs = 0,
-                             Otex64 = list(cat = c(
-                               "Exploitations mixtes combinant bovins laitiers avec grandes cultures",
-                               "Exploitations mixtes combinant grandes cultures avec bovins laitiers"
-                               ), val = 0))
-)
-
-sum(test$COEF_F*test$ABIS)
-sum(test$COEF_F*test$DABIS)
-sum(esea_finale$COEF_F*esea_finale$ABIS)
-
-
-
-
 

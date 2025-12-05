@@ -555,7 +555,7 @@ labels = c(
 )
 
 # Ajout de la variable
-esea_finale[, tranche_surf := cut(
+esea_finale[, `Surface adm.` := cut(
   SURF_ADM,
   breaks = breaks,
   labels = labels,
@@ -605,10 +605,52 @@ esea_petites_expl = esea_struct[, .(
 
 esea_otex_cdex = esea_struct[, .(
   NOM_DOSSIER,
-  otex11 = libelle_otefda,
-  otex64 = libelle_OTE64,
-  cdex = libelle_CDEX
+  Otex = fcase(
+    libelle_otefda == "Exploitations specialisees en grandes cultures", 
+    "Grandes cultures",
+    libelle_otefda == "Exploitations specialisees en maraichage ou horticulture",
+    "Maréchage et horticulture",
+    libelle_otefda == "Exploitations specialisees en viticulture",
+    "Viticulture",
+    libelle_otefda == "Exploitations specialisenamses en culture fruitieres ou autres cultures permanentes",
+    "Fruits et autres cultures permanentes",
+    libelle_otefda == "Exploitations bovines specialisees - orientation lait",
+    "Bovins lait",
+    libelle_otefda == "Exploitations bovines specialisees - orientation elevage et viande",
+    "Bovins viande",
+    libelle_otefda == "Exploitations bovines - lait, elevage et viande combines",
+    "Bovins mixte",
+    libelle_otefda == "Exploitations avec ovins et/ou caprins et/ou autres herbivores",
+    "Ovins, caprins et autres herbivores",
+    libelle_otefda == "Exploitations specialisees en porcins et/ou volailles (granivores)",
+    "Granivores",
+    libelle_otefda == "Exploitations de polyculture et/ou polyelevage",
+    "Polyculture-polyélevage",
+    libelle_otefda == "Exploitations non classees",
+    "Exploitations non classées",
+    default = NA_character_
+  ),
+  Otex64 = libelle_OTE64,
+  Cdex = fcase(
+    libelle_CDEX == "Moins de 2 000 euros",                  "01 - < 2k€ PBS",
+    libelle_CDEX == "Entre 2 000 et 4 000 euros",            "02 - 2–4k€ PBS",
+    libelle_CDEX == "Entre 4 000 et 8 000 euros",            "03 - 4–8k€ PBS",
+    libelle_CDEX == "Entre 8 000 et 15 000 euros",           "04 - 8–15k€ PBS",
+    libelle_CDEX == "Entre 15 000 et 25 000 euros",          "05 - 15–25k€ PBS",
+    libelle_CDEX == "Entre 25 000 et 50 000 euros",          "06 - 25–50k€ PBS",
+    libelle_CDEX == "Entre 50 000 et 100 000 euros",         "07 - 50–100k€ PBS",
+    libelle_CDEX == "Entre 100 000 et 250 000 euros",        "08 - 100–250k€ PBS",
+    libelle_CDEX == "Entre 250 000 et 500 000 euros",        "09 - 250–500k€ PBS",
+    libelle_CDEX == "Entre 500 000 et 750 000 euros",        "10 - 500–750k€ PBS",
+    libelle_CDEX == "Entre 750 000 et 1 000 000 euros",      "11 - 750k–1M€ PBS",
+    libelle_CDEX == "Entre 1 000 000 et 1 500 000 euros",    "12 - 1–1.5M€ PBS",
+    libelle_CDEX == "Entre 1 500 000 et 3 000 000 euros",    "13 - 1.5–3M€ PBS",
+    libelle_CDEX == "Plus de 3 000 000 euros",               "14 - > 3M€ PBS",
+    libelle_CDEX == "CDEX non déterminée",                   "15 - PBS ND",
+    default = NA_character_
+  )
 )]
+
 
 #---------------
 # Localisation
@@ -616,8 +658,8 @@ esea_otex_cdex = esea_struct[, .(
 
 esea_loc = esea_struct[, .(
   NOM_DOSSIER,
-  region = paste0(SIEGE_CODE_REG, " ", SIEGE_LIB_REG),
-  departement = paste0(SIEGE_CODE_DEP, " ", SIEGE_LIB_DEP)
+  Région = paste0(SIEGE_CODE_REG, " ", SIEGE_LIB_REG),
+  Département = paste0(SIEGE_CODE_DEP, " ", SIEGE_LIB_DEP)
 )]
 
 
