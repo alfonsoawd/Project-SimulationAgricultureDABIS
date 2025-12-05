@@ -19,11 +19,5 @@ Toutes les données sont exclues via `.gitignore` et disponibles sur le serveur 
   - `Surfaces-2023_DOSSIER-PAC_20251018.csv` — surfaces admissibles, graphiques et éléments associés.
 
 - **Données ESEA (Enquête 2023)**  
-  Non copiées dans le projet, import direct depuis :  
-  `~/CERISE/03-Espace-de-Diffusion/030_Structures_exploitations/3010_Enquetes_Structures/ESEA_2023/Donnes_definitives/RDS`
+  Non copiées dans le projet, import direct depuis le serveur du ministère
 
-------------------------------------------------------------
-
-## Emplacement complet sur CERISE
-
-`~/CERISE/02-Espace-de-Production/150_Sources_externes/15020_ASP/Travaux PAC 2027/Simulation Réforme DPB`
