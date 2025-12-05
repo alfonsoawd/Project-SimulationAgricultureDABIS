@@ -7,9 +7,6 @@
 Ce projet développe un outil permettant de **simuler le futur soutien à l’hectare DABIS** (Degressive Area-Based Income Support), proposé pour la prochaine PAC 2028–2034. Il repose sur la **reconstruction d’une base contrefactuelle**, l’**estimation d’une surface admissible** pour toutes les exploitations, et l’**implémentation d’un simulateur flexible** produisant automatiquement un **fichier Excel final** prêt pour l’analyse.
 
 > **Note :** Le dossier `données/` est volontairement **vide** car toutes les données confidentielles sont placées dans le **`.gitignore`**.  
-> Pour accéder au projet complet (avec données), se rendre sur le serveur CERISE :  
-> **`~/CERISE/02-Espace-de-Production/150_Sources_externes/15020_ASP/Travaux PAC 2027/Simulation Réforme DPB`**
-
 
 ### Points Clés
 
